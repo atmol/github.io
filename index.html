@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Two-level system explorer (Web)</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <style>
+    :root { --gap: 12px; --radius: 12px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif;
+           margin: 0; padding: 16px; background: #fafafa; color: #111; }
+    h1 { font-size: 18px; margin: 0 0 10px; }
+    .note { font-size: 13px; color: #444; margin-bottom: 14px; }
+    .wrap { display: grid; grid-template-columns: 360px 1fr; gap: var(--gap); align-items: start; }
+    @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+    .card { background: white; border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            padding: 12px; }
+    .controls .row { display: grid; grid-template-columns: 1fr 70px; gap: 10px; align-items: center; margin: 10px 0; }
+    .controls label { font-size: 13px; }
+    .controls input[type=range] { width: 100%; }
+    .controls .val { font-variant-numeric: tabular-nums; text-align: right; font-size: 13px; color: #222; }
+    .plots { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+    @media (max-width: 900px) { .plots { grid-template-columns: 1fr; } }
+    .footer { margin-top: 10px; font-size: 12px; color: #666; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #f1f5ff; color: #1f3b9d; font-size: 12px; }
+    .katex { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+  <h1>二準位系スライダー教材（Web版）</h1>
+  <div class="note">
+    <span class="pill">操作</span>
+    スライダーで <span class="katex">Ω（Rabi）</span>, <span class="katex">Δ（離調）</span>, <span class="katex">Γ（減衰/線幅スケール）</span> を変えて、
+    左：減衰つきRabi振動 <span class="katex">P<sub>e</sub>(t)</span>、右：定常線形 <span class="katex">P<sub>e</sub><sup>ss</sup>(Δ)</span> を観察します。
+  </div>
+
+  <div class="wrap">
+    <div class="card controls">
+      <div style="font-weight:600; margin-bottom:6px;">パラメータ</div>
+
+      <div class="row">
+        <label for="omega">Ω（Rabi周波数）</label>
+        <div class="val" id="omegaVal"></div>
+      </div>
+      <input id="omega" type="range" min="0" max="20" step="0.1" value="2.0" />
+
+      <div class="row">
+        <label for="delta">Δ（離調）</label>
+        <div class="val" id="deltaVal"></div>
+      </div>
+      <input id="delta" type="range" min="-20" max="20" step="0.1" value="0.0" />
+
+      <div class="row">
+        <label for="gamma">Γ（減衰/線幅スケール）</label>
+        <div class="val" id="gammaVal"></div>
+      </div>
+      <input id="gamma" type="range" min="0" max="10" step="0.05" value="1.0" />
+
+      <hr style="border:none;border-top:1px solid #eee; margin: 12px 0;">
+
+      <div style="font-weight:600; margin-bottom:6px;">表示設定</div>
+
+      <div class="row">
+        <label for="tmax">t_max（時間範囲）</label>
+        <div class="val" id="tmaxVal"></div>
+      </div>
+      <input id="tmax" type="range" min="1" max="50" step="0.5" value="10.0" />
+
+      <div class="row">
+        <label for="drange">Δレンジ（線形）</label>
+        <div class="val" id="drangeVal"></div>
+      </div>
+      <input id="drange" type="range" min="5" max="100" step="1" value="20" />
+
+      <div class="footer">
+        モデル：直感重視の簡易式（授業用）<br>
+        ・Rabi振動：減衰つき <span class="katex">P<sub>e</sub>(t)=(Ω²/Ω<sub>R</sub>²) sin²(Ω<sub>R</sub> t /2) e^{-Γ t}</span><br>
+        ・定常線形：<span class="katex">s=2Ω²/Γ²</span>, <span class="katex">P<sub>e</sub><sup>ss</sup>(Δ)=(s/2)/(1+s+(2Δ/Γ)²)</span>
+      </div>
+    </div>
+
+    <div class="plots">
+      <div class="card"><div id="plotTime" style="height:360px;"></div></div>
+      <div class="card"><div id="plotLine" style="height:360px;"></div></div>
+    </div>
+  </div>
+
+<script>
+  // --- Helpers ---
+  function linspace(a, b, n) {
+    const arr = new Array(n);
+    const step = (b - a) / (n - 1);
+    for (let i = 0; i < n; i++) arr[i] = a + step * i;
+    return arr;
+  }
+  function clamp(x, lo, hi){ return Math.max(lo, Math.min(hi, x)); }
+
+  // --- Physics (simple educational model) ---
+  function rabiPe(tArr, Omega, Delta, Gamma){
+    const OR = Math.sqrt(Omega*Omega + Delta*Delta);
+    if (OR === 0) return tArr.map(_ => 0);
+    return tArr.map(t => {
+      const s = Math.sin(OR * t / 2);
+      return (Omega*Omega/(OR*OR)) * (s*s) * Math.exp(-Gamma * t);
+    });
+  }
+  function steadyPe(dArr, Omega, Gamma){
+    const Geff = (Gamma === 0) ? 1e-6 : Gamma;
+    const s = 2 * Omega*Omega / (Geff*Geff);
+    const Pe = dArr.map(d => (s/2) / (1 + s + Math.pow(2*d/Geff, 2)));
+    return {Pe, s};
+  }
+
+  // --- DOM ---
+  const omega = document.getElementById('omega');
+  const delta = document.getElementById('delta');
+  const gamma = document.getElementById('gamma');
+  const tmax  = document.getElementById('tmax');
+  const drange = document.getElementById('drange');
+
+  const omegaVal = document.getElementById('omegaVal');
+  const deltaVal = document.getElementById('deltaVal');
+  const gammaVal = document.getElementById('gammaVal');
+  const tmaxVal  = document.getElementById('tmaxVal');
+  const drangeVal = document.getElementById('drangeVal');
+
+  function fmt(x){ return (Math.round(x*100)/100).toFixed(2); }
+
+  function update(){
+    const Om = parseFloat(omega.value);
+    const De = parseFloat(delta.value);
+    const Ga = parseFloat(gamma.value);
+    const T  = parseFloat(tmax.value);
+    const Dmax = parseFloat(drange.value);
+
+    omegaVal.textContent = fmt(Om);
+    deltaVal.textContent = fmt(De);
+    gammaVal.textContent = fmt(Ga);
+    tmaxVal.textContent  = fmt(T);
+    drangeVal.textContent = fmt(Dmax);
+
+    // Time plot
+    const N = 1600;
+    const t = linspace(0, T, N);
+    const Pe_t = rabiPe(t, Om, De, Ga);
+    const OR = Math.sqrt(Om*Om + De*De);
+
+    const timeTrace = {
+      x: t, y: Pe_t,
+      mode: 'lines',
+      name: 'P_e(t)'
+    };
+    const timeLayout = {
+      title: {text: 'A) Rabi振動（減衰つき）', font: {size: 14}},
+      margin: {l: 50, r: 10, t: 40, b: 45},
+      xaxis: {title: 'time (arb. units)'},
+      yaxis: {title: 'Excited population P_e(t)', range: [-0.02, 1.02]},
+      annotations: [{
+        xref: 'paper', yref: 'paper', x: 0.02, y: 0.98, showarrow: false,
+        align: 'left',
+        text: `Ω=${fmt(Om)},  Δ=${fmt(De)},  Γ=${fmt(Ga)}<br>Ω_R=sqrt(Ω²+Δ²)=${fmt(OR)}`,
+        font: {size: 12}
+      }]
+    };
+
+    // Line shape plot
+    const ND = 2001;
+    const d = linspace(-Dmax, Dmax, ND);
+    const out = steadyPe(d, Om, Ga);
+    const Pe_ss = out.Pe;
+    const s = out.s;
+
+    const lineTrace = {
+      x: d, y: Pe_ss,
+      mode: 'lines',
+      name: 'P_e^ss(Δ)'
+    };
+    const lineLayout = {
+      title: {text: 'B) 定常線形（飽和＆パワーブロードニング）', font: {size: 14}},
+      margin: {l: 50, r: 10, t: 40, b: 45},
+      xaxis: {title: 'detuning Δ (arb. units)'},
+      yaxis: {title: 'Steady excited population P_e^ss(Δ)', range: [-0.02, 0.52]},
+      annotations: [{
+        xref: 'paper', yref: 'paper', x: 0.02, y: 0.98, showarrow: false,
+        align: 'left',
+        text: `s=2Ω²/Γ²=${fmt(s)}<br>（sが大きいほど幅が広がる）`,
+        font: {size: 12}
+      }]
+    };
+
+    Plotly.react('plotTime', [timeTrace], timeLayout, {displayModeBar: false, responsive: true});
+    Plotly.react('plotLine', [lineTrace], lineLayout, {displayModeBar: false, responsive: true});
+  }
+
+  // Bind events
+  [omega, delta, gamma, tmax, drange].forEach(el => el.addEventListener('input', update));
+
+  // Initial draw
+  update();
+</script>
+</body>
+</html>
